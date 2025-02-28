@@ -4,6 +4,7 @@
 #include <QMessageBox>
 #include <QNetworkInterface>
 #include <QHostAddress>
+#include <QMetaObject>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -112,8 +113,10 @@ void MainWindow::stopStreaming()
         return;
     }
 
-    // Stop status timer
-    statusTimer->stop();
+    // Stop status timer - Ensure this happens in the main thread
+    if (statusTimer->isActive()) {
+        statusTimer->stop();
+    }
 
     // Stop GStreamer
     if (pipeline) {
@@ -174,13 +177,21 @@ gboolean MainWindow::busCallback(GstBus *bus, GstMessage *msg, gpointer data)
         GError *err;
         gchar *debug;
         gst_message_parse_error(msg, &err, &debug);
+
+        // Log the error
+        qDebug("GStreamer error: %s", err->message);
+        qDebug("Debug info: %s", debug);
+
         g_error_free(err);
         g_free(debug);
-        window->stopStreaming();
+
+        // Use Qt's signal-slot mechanism to safely stop streaming from the main thread
+        QMetaObject::invokeMethod(window, "stopStreaming", Qt::QueuedConnection);
         break;
     }
     case GST_MESSAGE_EOS:
-        window->stopStreaming();
+        // End of stream - safely stop streaming from the main thread
+        QMetaObject::invokeMethod(window, "stopStreaming", Qt::QueuedConnection);
         break;
     default:
         break;

@@ -23,10 +23,21 @@ qnx: target.path = /tmp/$${TARGET}/bin
 else: unix:!android: target.path = /opt/$${TARGET}/bin
 !isEmpty(target.path): INSTALLS += target
 
+# Enable debug output
+DEFINES += QT_MESSAGELOGGER_DEBUG
+
 # GStreamer configuration for Windows
 win32 {
     # Update these paths to match your GStreamer installation
     GSTREAMER_DIR = C:/gstreamer/1.0/msvc_x86_64
+
+    # If the above path doesn't work, try these common installation paths
+    !exists($${GSTREAMER_DIR}) {
+        GSTREAMER_DIR = C:/gstreamer/1.0/mingw_x86_64
+    }
+    !exists($${GSTREAMER_DIR}) {
+        GSTREAMER_DIR = C:/gstreamer/1.0/x86_64
+    }
 
     INCLUDEPATH += \
         $${GSTREAMER_DIR}/include \
@@ -45,4 +56,7 @@ win32 {
         -lgstbase-1.0 \
         -lgstapp-1.0 \
         -lgstvideo-1.0
+
+    # Make sure GStreamer DLLs are in the PATH at runtime
+    QMAKE_POST_LINK += $$quote(echo "Remember to add $${GSTREAMER_DIR}/bin to your PATH")
 }

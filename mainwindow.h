@@ -3,6 +3,7 @@
 
 #include <QMainWindow>
 #include <QTimer>
+#include <QDebug>
 #include <gst/gst.h>
 
 QT_BEGIN_NAMESPACE
@@ -17,7 +18,7 @@ public:
     MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
 
-private slots:
+public slots:  // Changed from private slots to public slots for QMetaObject::invokeMethod
     void startStreaming();
     void stopStreaming();
     void updateStatus();
