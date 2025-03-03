@@ -23,6 +23,7 @@ public slots:  // Changed from private slots to public slots for QMetaObject::in
     void stopStreaming();
     void updateStatus();
     void browseFile();
+    void logMessage(const QString &message); // New method for logging
 
 private:
     Ui::MainWindow *ui;
@@ -35,7 +36,5 @@ private:
 
     static gboolean busCallback(GstBus *bus, GstMessage *msg, gpointer data);
     static void *gstThreadFunc(gpointer data);
-    void setupGstreamer();
-    void cleanupGstreamer();
 };
 #endif // MAINWINDOW_H

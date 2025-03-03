@@ -38,7 +38,15 @@ MainWindow::MainWindow(QWidget *parent)
             ipAddresses += address.toString() + "\n";
         }
     }
+
+    if (ipAddresses.isEmpty()) {
+        ipAddresses = "127.0.0.1";
+    }
+
     ui->ipAddressLabel->setText(ipAddresses);
+
+    // Log that application started
+    ui->logTextEdit->append("Application started. Select a video file to stream.");
 }
 
 MainWindow::~MainWindow()
@@ -55,6 +63,7 @@ void MainWindow::browseFile()
     if (!videoPath.isEmpty()) {
         ui->filePathEdit->setText(videoPath);
         ui->startButton->setEnabled(true);
+        ui->logTextEdit->append("Video file selected: " + videoPath);
     }
 }
 
@@ -66,20 +75,42 @@ void MainWindow::startStreaming()
     }
 
     int port = ui->portSpinBox->value();
-    QString rtspUrl = QString("rtsp://%1:%2/video").arg(ui->ipAddressLabel->text().split("\n")[0]).arg(port);
+    QString ip = ui->ipAddressLabel->text().split("\n")[0];
+    QString rtspUrl = QString("rtsp://%1:%2/video").arg(ip).arg(port);
     ui->rtspUrlEdit->setText(rtspUrl);
 
-    // Set up GStreamer pipeline
-    QString pipelineStr = QString(
-                              "filesrc location=\"%1\" ! "
-                              "decodebin ! videoconvert ! x264enc tune=zerolatency ! "
-                              "rtph264pay name=pay0 pt=96 ! "
-                              "rtspsink service=%2 address=0.0.0.0 protocols=tcp"
-                              ).arg(videoPath).arg(port);
+    // Log streaming attempt
+    ui->logTextEdit->append("Attempting to start streaming on port " + QString::number(port));
+    ui->logTextEdit->append("RTSP URL: " + rtspUrl);
 
-    pipeline = gst_parse_launch(pipelineStr.toUtf8().constData(), NULL);
+    // Create a more robust pipeline
+    QString pipelineStr;
+
+    // For Windows, we'll use a simpler, more compatible pipeline
+    pipelineStr = QString(
+                      "filesrc location=\"%1\" ! "
+                      "decodebin name=decoder ! "
+                      "videoconvert ! video/x-raw,format=I420 ! "
+                      "x264enc tune=zerolatency bitrate=500 ! "
+                      "rtph264pay config-interval=1 name=pay0 pt=96 ! "
+                      "rtspsink service=%2 address=0.0.0.0 protocols=tcp+udp"
+                      ).arg(videoPath).arg(port);
+
+    ui->logTextEdit->append("Creating pipeline...");
+    ui->logTextEdit->append(pipelineStr);
+
+    GError *error = nullptr;
+    pipeline = gst_parse_launch(pipelineStr.toUtf8().constData(), &error);
+
+    if (error) {
+        ui->logTextEdit->append("Pipeline creation error: " + QString(error->message));
+        QMessageBox::critical(this, "Error", "Failed to create GStreamer pipeline: " + QString(error->message));
+        g_error_free(error);
+        return;
+    }
 
     if (!pipeline) {
+        ui->logTextEdit->append("Failed to create pipeline (unknown error)");
         QMessageBox::critical(this, "Error", "Failed to create GStreamer pipeline");
         return;
     }
@@ -94,7 +125,14 @@ void MainWindow::startStreaming()
     gst_thread = g_thread_new("GstThread", gstThreadFunc, this);
 
     // Start the pipeline
-    gst_element_set_state(pipeline, GST_STATE_PLAYING);
+    GstStateChangeReturn ret = gst_element_set_state(pipeline, GST_STATE_PLAYING);
+
+    if (ret == GST_STATE_CHANGE_FAILURE) {
+        ui->logTextEdit->append("Failed to start pipeline");
+        QMessageBox::critical(this, "Error", "Failed to start GStreamer pipeline");
+        g_main_loop_quit(loop);
+        return;
+    }
 
     // Update UI
     ui->startButton->setEnabled(false);
@@ -102,6 +140,8 @@ void MainWindow::startStreaming()
     ui->browseButton->setEnabled(false);
     ui->statusLabel->setText("Streaming...");
     isStreaming = true;
+
+    ui->logTextEdit->append("Pipeline started successfully");
 
     // Start status timer
     statusTimer->start(1000);
@@ -112,6 +152,8 @@ void MainWindow::stopStreaming()
     if (!isStreaming) {
         return;
     }
+
+    ui->logTextEdit->append("Stopping stream...");
 
     // Stop status timer - Ensure this happens in the main thread
     if (statusTimer->isActive()) {
@@ -128,10 +170,12 @@ void MainWindow::stopStreaming()
     // Quit main loop
     if (loop) {
         g_main_loop_quit(loop);
-        g_thread_join(gst_thread);
+        if (gst_thread) {
+            g_thread_join(gst_thread);
+            gst_thread = nullptr;
+        }
         g_main_loop_unref(loop);
         loop = nullptr;
-        gst_thread = nullptr;
     }
 
     // Update UI
@@ -140,6 +184,8 @@ void MainWindow::stopStreaming()
     ui->browseButton->setEnabled(true);
     ui->statusLabel->setText("Stopped");
     isStreaming = false;
+
+    ui->logTextEdit->append("Stream stopped");
 }
 
 void MainWindow::updateStatus()
@@ -179,8 +225,19 @@ gboolean MainWindow::busCallback(GstBus *bus, GstMessage *msg, gpointer data)
         gst_message_parse_error(msg, &err, &debug);
 
         // Log the error
-        qDebug("GStreamer error: %s", err->message);
-        qDebug("Debug info: %s", debug);
+        QString errorMsg = QString("GStreamer error: %1").arg(err->message);
+        QString debugInfo = QString("Debug info: %1").arg(debug);
+
+        qDebug("%s", qPrintable(errorMsg));
+        qDebug("%s", qPrintable(debugInfo));
+
+        // Update UI with error info
+        QMetaObject::invokeMethod(window, "logMessage",
+                                  Qt::QueuedConnection,
+                                  Q_ARG(QString, errorMsg));
+        QMetaObject::invokeMethod(window, "logMessage",
+                                  Qt::QueuedConnection,
+                                  Q_ARG(QString, debugInfo));
 
         g_error_free(err);
         g_free(debug);
@@ -191,13 +248,37 @@ gboolean MainWindow::busCallback(GstBus *bus, GstMessage *msg, gpointer data)
     }
     case GST_MESSAGE_EOS:
         // End of stream - safely stop streaming from the main thread
+        QMetaObject::invokeMethod(window, "logMessage",
+                                  Qt::QueuedConnection,
+                                  Q_ARG(QString, "End of stream reached"));
         QMetaObject::invokeMethod(window, "stopStreaming", Qt::QueuedConnection);
         break;
+    case GST_MESSAGE_STATE_CHANGED: {
+        GstState old_state, new_state, pending_state;
+        gst_message_parse_state_changed(msg, &old_state, &new_state, &pending_state);
+
+        // Only print state changes for the pipeline
+        if (GST_MESSAGE_SRC(msg) == GST_OBJECT(window->pipeline)) {
+            QString stateChange = QString("Pipeline state changed from %1 to %2")
+                                      .arg(gst_element_state_get_name(old_state))
+                                      .arg(gst_element_state_get_name(new_state));
+
+            QMetaObject::invokeMethod(window, "logMessage",
+                                      Qt::QueuedConnection,
+                                      Q_ARG(QString, stateChange));
+        }
+        break;
+    }
     default:
         break;
     }
 
     return TRUE;
+}
+
+void MainWindow::logMessage(const QString &message)
+{
+    ui->logTextEdit->append(message);
 }
 
 void* MainWindow::gstThreadFunc(gpointer data)
